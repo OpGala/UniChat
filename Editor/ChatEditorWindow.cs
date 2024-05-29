@@ -29,9 +29,14 @@ namespace UniChat.Editor
         private string _username = "Username";
 
         // Colors for chat messages
-        private Color _userMessageColor = Color.black;
-        private Color _logMessageColor = Color.blue;
-        private int _chunkSize = 65536; // Default chunk size (64KB)
+        private Color _userMessageColor;
+        private Color _logMessageColor;
+        private int _chunkSize;
+
+        private static readonly string UserMessageColorPrefKey = "UniChat_UserMessageColor";
+        private static readonly string LogMessageColorPrefKey = "UniChat_LogMessageColor";
+        private static readonly string ChunkSizePrefKey = "UniChat_ChunkSize";
+        private static readonly string UsernamePrefKey = "UniChat_Username";
 
         [MenuItem("Window/UniChat")]
         public static void ShowWindow()
@@ -42,11 +47,13 @@ namespace UniChat.Editor
         private void OnEnable()
         {
             LoadChatLog();
+            LoadPreferences();
         }
 
         private void OnDisable()
         {
             SaveChatLog();
+            SavePreferences();
             Disconnect();
         }
 
@@ -222,12 +229,11 @@ namespace UniChat.Editor
             }
         }
 
-
         private async UniTaskVoid ReceiveMessagesAsync(CancellationToken cancellationToken)
         {
             try
             {
-                byte[] buffer = new byte[4096];
+                byte[] buffer = new byte[65536]; // Augmentation de la taille du buffer pour améliorer les performances
                 string currentFileName = null;
                 MemoryStream fileStream = null;
                 int totalChunks = 0;
@@ -306,7 +312,6 @@ namespace UniChat.Editor
                 EditorUtility.ClearProgressBar();
             }
         }
-
 
         private void Disconnect()
         {
@@ -407,13 +412,60 @@ namespace UniChat.Editor
             _chunkSize = size;
         }
 
-        public sealed class OptionsWindow : EditorWindow
+        private void SavePreferences()
+        {
+            EditorPrefs.SetString(UserMessageColorPrefKey, ColorUtility.ToHtmlStringRGB(_userMessageColor));
+            EditorPrefs.SetString(LogMessageColorPrefKey, ColorUtility.ToHtmlStringRGB(_logMessageColor));
+            EditorPrefs.SetInt(ChunkSizePrefKey, _chunkSize);
+            EditorPrefs.SetString(UsernamePrefKey, _username);
+        }
+
+        private void LoadPreferences()
+        {
+            if (EditorPrefs.HasKey(UserMessageColorPrefKey))
+            {
+                ColorUtility.TryParseHtmlString("#" + EditorPrefs.GetString(UserMessageColorPrefKey), out _userMessageColor);
+            }
+            else
+            {
+                _userMessageColor = Color.black;
+            }
+
+            if (EditorPrefs.HasKey(LogMessageColorPrefKey))
+            {
+                ColorUtility.TryParseHtmlString("#" + EditorPrefs.GetString(LogMessageColorPrefKey), out _logMessageColor);
+            }
+            else
+            {
+                _logMessageColor = Color.blue;
+            }
+
+            if (EditorPrefs.HasKey(ChunkSizePrefKey))
+            {
+                _chunkSize = EditorPrefs.GetInt(ChunkSizePrefKey);
+            }
+            else
+            {
+                _chunkSize = 65536; // Default chunk size
+            }
+
+            if (EditorPrefs.HasKey(UsernamePrefKey))
+            {
+                _username = EditorPrefs.GetString(UsernamePrefKey);
+            }
+            else
+            {
+                _username = "Username";
+            }
+        }
+
+        public class OptionsWindow : EditorWindow
         {
             private ChatEditorWindow _chatEditorWindow;
             private Color _userMessageColor;
             private Color _logMessageColor;
             private int _chunkSize;
-            private readonly string[] _chunkSizeOptions = new[] { "8KB", "64KB", "256KB" };
+            private string[] _chunkSizeOptions = new[] { "8KB", "64KB", "256KB" };
             private int _selectedChunkSizeOption;
 
             public static void ShowWindow(ChatEditorWindow chatEditorWindow)
@@ -440,6 +492,7 @@ namespace UniChat.Editor
                     _chatEditorWindow.SetUserMessageColor(_userMessageColor);
                     _chatEditorWindow.SetLogMessageColor(_logMessageColor);
                     _chatEditorWindow.SetChunkSize(_chunkSize);
+                    _chatEditorWindow.SavePreferences();
                     Close();
                 }
             }

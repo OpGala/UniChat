@@ -28,6 +28,11 @@ namespace UniChat.Editor
         private TcpListener _listener;
         private string _username = "Username";
 
+        // Colors for chat messages
+        private Color _userMessageColor = Color.black;
+        private Color _logMessageColor = Color.blue;
+        private int _chunkSize = 65536; // Default chunk size (64KB)
+
         [MenuItem("Window/UniChat")]
         public static void ShowWindow()
         {
@@ -54,7 +59,8 @@ namespace UniChat.Editor
             _username = EditorGUILayout.TextField("Username", _username);
 
             _scrollPosition = EditorGUILayout.BeginScrollView(_scrollPosition);
-            EditorGUILayout.TextArea(_chatLog, GUILayout.ExpandHeight(true));
+            GUIStyle chatStyle = new GUIStyle(EditorStyles.textArea) { richText = true };
+            EditorGUILayout.TextArea(_chatLog, chatStyle, GUILayout.ExpandHeight(true));
             EditorGUILayout.EndScrollView();
 
             _chatInput = EditorGUILayout.TextField("Chat Input", _chatInput);
@@ -90,6 +96,16 @@ namespace UniChat.Editor
                 ShowLocalIPAddress();
             }
 
+            if (GUILayout.Button("Clear Chat"))
+            {
+                ClearChat();
+            }
+
+            if (GUILayout.Button("Options"))
+            {
+                OptionsWindow.ShowWindow(this);
+            }
+
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.EndVertical();
@@ -101,13 +117,13 @@ namespace UniChat.Editor
             {
                 _listener = new TcpListener(IPAddress.Any, 5000);
                 _listener.Start();
-                _chatLog += "Server started...\n";
+                LogMessage("Server started...");
 
                 _client = await _listener.AcceptTcpClientAsync();
                 _networkStream = _client.GetStream();
                 _connected = true;
 
-                _chatLog += "Client connected...\n";
+                LogMessage("Client connected...");
                 _cancellationTokenSource = new CancellationTokenSource();
                 ReceiveMessagesAsync(_cancellationTokenSource.Token).Forget();
                 Repaint();
@@ -128,7 +144,7 @@ namespace UniChat.Editor
                 _networkStream = _client.GetStream();
                 _connected = true;
 
-                _chatLog += "Connected to server...\n";
+                LogMessage("Connected to server...");
                 _cancellationTokenSource = new CancellationTokenSource();
                 ReceiveMessagesAsync(_cancellationTokenSource.Token).Forget();
                 Repaint();
@@ -150,7 +166,7 @@ namespace UniChat.Editor
                 string message = $"{_username}: {_chatInput}";
                 byte[] data = Encoding.UTF8.GetBytes("MSG:" + message);
                 await _networkStream.WriteAsync(data, 0, data.Length);
-                _chatLog += "Me: " + _chatInput + "\n";
+                AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_userMessageColor)}>Me: {_chatInput}</color>");
                 _chatInput = "";
                 Repaint();
             }
@@ -174,22 +190,25 @@ namespace UniChat.Editor
             {
                 byte[] fileData = await File.ReadAllBytesAsync(filePath);
                 string fileName = Path.GetFileName(filePath);
-                const int chunkSize = 1024; // 1KB chunks
-                int totalChunks = (fileData.Length + chunkSize - 1) / chunkSize;
-                
+                int totalChunks = (fileData.Length + _chunkSize - 1) / _chunkSize;
+
                 for (int i = 0; i < totalChunks; i++)
                 {
-                    int currentChunkSize = Math.Min(chunkSize, fileData.Length - i * chunkSize);
+                    int currentChunkSize = Math.Min(_chunkSize, fileData.Length - i * _chunkSize);
                     byte[] chunkData = new byte[currentChunkSize];
-                    Buffer.BlockCopy(fileData, i * chunkSize, chunkData, 0, currentChunkSize);
+                    Buffer.BlockCopy(fileData, i * _chunkSize, chunkData, 0, currentChunkSize);
                     byte[] messageData = Encoding.UTF8.GetBytes($"FILE:{fileName}:{i}:{totalChunks}:");
                     byte[] data = new byte[messageData.Length + chunkData.Length];
                     Buffer.BlockCopy(messageData, 0, data, 0, messageData.Length);
                     Buffer.BlockCopy(chunkData, 0, data, messageData.Length, chunkData.Length);
 
                     await _networkStream.WriteAsync(data, 0, data.Length);
+
+                    // Update progress
+                    EditorUtility.DisplayProgressBar("File Transfer", $"Sending {fileName} ({i + 1}/{totalChunks})", (float)(i + 1) / totalChunks);
                 }
-                _chatLog += "Me: Sent file " + fileName + "\n";
+                AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_userMessageColor)}>Me: Sent file {fileName}</color>");
+                EditorUtility.ClearProgressBar();
                 Repaint();
             }
             catch (Exception ex)
@@ -197,13 +216,22 @@ namespace UniChat.Editor
                 Debug.LogError("Error sending file: " + ex.Message);
                 Disconnect();
             }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
         }
+
 
         private async UniTaskVoid ReceiveMessagesAsync(CancellationToken cancellationToken)
         {
             try
             {
                 byte[] buffer = new byte[4096];
+                string currentFileName = null;
+                MemoryStream fileStream = null;
+                int totalChunks = 0;
+
                 while (_connected)
                 {
                     int bytesRead = await _networkStream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
@@ -213,33 +241,55 @@ namespace UniChat.Editor
                         if (message.StartsWith("MSG:"))
                         {
                             message = message.Substring(4); // Remove "MSG:"
-                            _chatLog += message + "\n";
+                            AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_userMessageColor)}>{message}</color>");
                         }
                         else if (message.StartsWith("FILE:"))
                         {
                             string[] fileInfo = message.Split(':');
                             string fileName = fileInfo[1];
                             int chunkIndex = int.Parse(fileInfo[2]);
-                            int totalChunks = int.Parse(fileInfo[3]);
+                            totalChunks = int.Parse(fileInfo[3]);
 
-                            byte[] fileData = new byte[bytesRead - message.IndexOf(':', 5) - 1];
-                            Buffer.BlockCopy(buffer, message.IndexOf(':', 5) + 1, fileData, 0, fileData.Length);
+                            int fileDataIndex = message.IndexOf(':', 5) + 1;
+                            byte[] fileData = new byte[bytesRead - fileDataIndex];
+                            Buffer.BlockCopy(buffer, fileDataIndex, fileData, 0, fileData.Length);
 
-                            if (EditorUtility.DisplayDialog("File Transfer", $"Do you want to receive the file '{fileName}'?", "Yes", "No"))
+                            if (chunkIndex == 0) // Start of file transfer
                             {
-                                string savePath = EditorUtility.SaveFilePanel("Save File", "", fileName, "");
-                                if (!string.IsNullOrEmpty(savePath))
+                                if (EditorUtility.DisplayDialog("File Transfer", $"Do you want to receive the file '{fileName}'?", "Yes", "No"))
                                 {
-                                    await using (var fs = new FileStream(savePath, FileMode.Append, FileAccess.Write))
+                                    string savePath = EditorUtility.SaveFilePanel("Save File", "", fileName, Path.GetExtension(fileName));
+                                    if (!string.IsNullOrEmpty(savePath))
                                     {
-                                        await fs.WriteAsync(fileData, 0, fileData.Length, cancellationToken);
+                                        fileStream = new MemoryStream();
+                                        currentFileName = savePath;
+                                        AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>Receiving file: {fileName}</color>");
                                     }
-                                    _chatLog += $"Received file chunk {chunkIndex + 1}/{totalChunks} for {fileName}\n";
+                                    else
+                                    {
+                                        AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>File transfer '{fileName}' cancelled by user.</color>");
+                                        continue;
+                                    }
+                                }
+                                else
+                                {
+                                    AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>File transfer '{fileName}' declined.</color>");
+                                    continue;
                                 }
                             }
-                            else
+
+                            fileStream.Write(fileData, 0, fileData.Length);
+                            EditorUtility.DisplayProgressBar("File Transfer", $"Receiving {fileName} ({chunkIndex + 1}/{totalChunks})", (float)(chunkIndex + 1) / totalChunks);
+                            AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>Received chunk {chunkIndex + 1}/{totalChunks} for {fileName}</color>");
+
+                            if (chunkIndex == totalChunks - 1) // End of file transfer
                             {
-                                _chatLog += $"File transfer '{fileName}' declined.\n";
+                                File.WriteAllBytes(currentFileName, fileStream.ToArray());
+                                AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>File {fileName} saved to {currentFileName}</color>");
+                                fileStream.Close();
+                                fileStream = null;
+                                currentFileName = null;
+                                EditorUtility.ClearProgressBar();
                             }
                         }
                         Repaint(); // Redraw the window
@@ -251,7 +301,12 @@ namespace UniChat.Editor
                 Debug.LogError("Error receiving messages: " + ex.Message);
                 Disconnect();
             }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
         }
+
 
         private void Disconnect()
         {
@@ -262,7 +317,7 @@ namespace UniChat.Editor
                 _networkStream?.Close();
                 _client?.Close();
                 _listener?.Stop();
-                _chatLog += "Disconnected...\n";
+                AppendMessage("Disconnected...");
                 Repaint();
             }
             catch (Exception ex)
@@ -271,7 +326,7 @@ namespace UniChat.Editor
             }
         }
 
-        private void ShowLocalIPAddress()
+        private static void ShowLocalIPAddress()
         {
             string localIP = "Not available";
             try
@@ -319,6 +374,74 @@ namespace UniChat.Editor
             catch (Exception ex)
             {
                 Debug.LogError("Error loading chat log: " + ex.Message);
+            }
+        }
+
+        private void ClearChat()
+        {
+            _chatLog = "";
+        }
+
+        private void AppendMessage(string message)
+        {
+            _chatLog += message + "\n";
+        }
+
+        private void LogMessage(string message)
+        {
+            AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>{message}</color>");
+        }
+
+        private void SetUserMessageColor(Color color)
+        {
+            _userMessageColor = color;
+        }
+
+        private void SetLogMessageColor(Color color)
+        {
+            _logMessageColor = color;
+        }
+
+        private void SetChunkSize(int size)
+        {
+            _chunkSize = size;
+        }
+
+        public sealed class OptionsWindow : EditorWindow
+        {
+            private ChatEditorWindow _chatEditorWindow;
+            private Color _userMessageColor;
+            private Color _logMessageColor;
+            private int _chunkSize;
+            private readonly string[] _chunkSizeOptions = new[] { "8KB", "64KB", "256KB" };
+            private int _selectedChunkSizeOption;
+
+            public static void ShowWindow(ChatEditorWindow chatEditorWindow)
+            {
+                var window = GetWindow<OptionsWindow>("Options");
+                window._chatEditorWindow = chatEditorWindow;
+                window._userMessageColor = chatEditorWindow._userMessageColor;
+                window._logMessageColor = chatEditorWindow._logMessageColor;
+                window._chunkSize = chatEditorWindow._chunkSize;
+                window._selectedChunkSizeOption = Array.IndexOf(window._chunkSizeOptions, $"{window._chunkSize / 1024}KB");
+                window.Show();
+            }
+
+            private void OnGUI()
+            {
+                _userMessageColor = EditorGUILayout.ColorField("User Message Color", _userMessageColor);
+                _logMessageColor = EditorGUILayout.ColorField("Log Message Color", _logMessageColor);
+
+                _selectedChunkSizeOption = EditorGUILayout.Popup("Chunk Size", _selectedChunkSizeOption, _chunkSizeOptions);
+                _chunkSize = int.Parse(_chunkSizeOptions[_selectedChunkSizeOption].Replace("KB", "")) * 1024;
+
+                if (GUILayout.Button("Apply"))
+                {
+                    _chatEditorWindow.SetUserMessageColor(_userMessageColor);
+                    _chatEditorWindow.SetLogMessageColor(_logMessageColor);
+                    _chatEditorWindow.SetChunkSize(_chunkSize);
+                    Close();
+                }
             }
         }
     }

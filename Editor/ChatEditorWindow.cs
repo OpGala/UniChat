@@ -27,12 +27,12 @@ namespace UniChat.Editor
         private TcpListener _listener;
         private string _username = "Username";
 
-        private static readonly string UserMessageColorPrefKey = "UniChat_UserMessageColor";
-        private static readonly string LogMessageColorPrefKey = "UniChat_LogMessageColor";
-        private static readonly string ChunkSizePrefKey = "UniChat_ChunkSize";
-        private static readonly string UsernamePrefKey = "UniChat_Username";
-        private static readonly string RolePrefKey = "UniChat_Role";
-        private static readonly string IPAddressPrefKey = "UniChat_IPAddress";
+        private const string UserMessageColorPrefKey = "UniChat_UserMessageColor";
+        private const string LogMessageColorPrefKey = "UniChat_LogMessageColor";
+        private const string ChunkSizePrefKey = "UniChat_ChunkSize";
+        private const string UsernamePrefKey = "UniChat_Username";
+        private const string RolePrefKey = "UniChat_Role";
+        private const string IPAddressPrefKey = "UniChat_IPAddress";
 
         private Color _userMessageColor;
         private Color _logMessageColor;
@@ -70,7 +70,7 @@ namespace UniChat.Editor
             _username = EditorGUILayout.TextField("Username", _username);
 
             _scrollPosition = EditorGUILayout.BeginScrollView(_scrollPosition);
-            GUIStyle chatStyle = new GUIStyle(EditorStyles.textArea) { richText = true };
+            var chatStyle = new GUIStyle(EditorStyles.textArea) { richText = true };
             EditorGUILayout.TextArea(_chatLog, chatStyle, GUILayout.ExpandHeight(true));
             EditorGUILayout.EndScrollView();
 

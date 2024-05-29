@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -21,22 +22,24 @@ namespace UniChat.Editor
         private NetworkStream _networkStream;
         private CancellationTokenSource _cancellationTokenSource;
         private bool _connected;
-        private string _ipAddress = "IP Address";
-        #pragma warning disable 414
-        private bool _isServer = true;
-        #pragma warning restore 414
+        public string ipAddress = "IP Address";
+        public bool isServer = true;
         private TcpListener _listener;
         private string _username = "Username";
-
-        // Colors for chat messages
-        private Color _userMessageColor;
-        private Color _logMessageColor;
-        private int _chunkSize;
 
         private static readonly string UserMessageColorPrefKey = "UniChat_UserMessageColor";
         private static readonly string LogMessageColorPrefKey = "UniChat_LogMessageColor";
         private static readonly string ChunkSizePrefKey = "UniChat_ChunkSize";
         private static readonly string UsernamePrefKey = "UniChat_Username";
+        private static readonly string RolePrefKey = "UniChat_Role";
+        private static readonly string IPAddressPrefKey = "UniChat_IPAddress";
+
+        private Color _userMessageColor;
+        private Color _logMessageColor;
+        private int _chunkSize;
+        private readonly Queue<string> _messageQueue = new Queue<string>();
+
+        public static ChatEditorWindow Instance { get; private set; }
 
         [MenuItem("Window/UniChat")]
         public static void ShowWindow()
@@ -46,6 +49,7 @@ namespace UniChat.Editor
 
         private void OnEnable()
         {
+            Instance = this;
             LoadChatLog();
             LoadPreferences();
         }
@@ -75,7 +79,7 @@ namespace UniChat.Editor
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("Send"))
             {
-                SendMessageAsync().Forget();
+                SendMessageAsync(_chatInput).Forget();
             }
 
             if (GUILayout.Button("Send File"))
@@ -85,15 +89,15 @@ namespace UniChat.Editor
 
             if (!_connected)
             {
-                _ipAddress = EditorGUILayout.TextField("IP Address", _ipAddress);
+                ipAddress = EditorGUILayout.TextField("IP Address", ipAddress);
                 if (GUILayout.Button("Connect as Client"))
                 {
-                    _isServer = false;
-                    ConnectToServerAsync(_ipAddress).Forget();
+                    isServer = false;
+                    ConnectToServerAsync(ipAddress).Forget();
                 }
                 if (GUILayout.Button("Start Server"))
                 {
-                    _isServer = true;
+                    isServer = true;
                     StartServerAsync().Forget();
                 }
             }
@@ -118,7 +122,7 @@ namespace UniChat.Editor
             EditorGUILayout.EndVertical();
         }
 
-        private async UniTaskVoid StartServerAsync()
+        public async UniTask StartServerAsync()
         {
             try
             {
@@ -142,12 +146,12 @@ namespace UniChat.Editor
             }
         }
 
-        private async UniTaskVoid ConnectToServerAsync(string ipAddress)
+        public async UniTask ConnectToServerAsync(string ipActualAddress)
         {
             try
             {
                 _client = new TcpClient();
-                await _client.ConnectAsync(ipAddress, 5000);
+                await _client.ConnectAsync(ipActualAddress, 5000);
                 _networkStream = _client.GetStream();
                 _connected = true;
 
@@ -163,10 +167,13 @@ namespace UniChat.Editor
             }
         }
 
-        private async UniTaskVoid SendMessageAsync()
+        private async UniTask SendMessageAsync(string _)
         {
             if (!_connected || string.IsNullOrEmpty(_chatInput))
+            {
+                _messageQueue.Enqueue(_chatInput);
                 return;
+            }
 
             try
             {
@@ -184,7 +191,7 @@ namespace UniChat.Editor
             }
         }
 
-        private async UniTaskVoid SendFileAsync()
+        private async UniTask SendFileAsync()
         {
             if (!_connected)
                 return;
@@ -232,18 +239,13 @@ namespace UniChat.Editor
             }
         }
 
-
-
-
-
-        private async UniTaskVoid ReceiveMessagesAsync(CancellationToken cancellationToken)
+        private async UniTask ReceiveMessagesAsync(CancellationToken cancellationToken)
         {
             try
             {
                 byte[] buffer = new byte[_chunkSize + 1024]; // Taille du buffer légèrement supérieure à la taille des chunks pour gérer les métadonnées
                 string currentFileName = null;
                 MemoryStream fileStream = null;
-                int totalChunks = 0;
 
                 while (_connected)
                 {
@@ -263,7 +265,7 @@ namespace UniChat.Editor
                             string[] fileInfo = metadata.Split(':');
                             string fileName = fileInfo[1];
                             int chunkIndex = int.Parse(fileInfo[2]);
-                            totalChunks = int.Parse(fileInfo[3]);
+                            int totalChunks = int.Parse(fileInfo[3]);
 
                             int fileDataIndex = metadataEndIndex + 1;
                             byte[] fileData = new byte[bytesRead - fileDataIndex];
@@ -293,22 +295,32 @@ namespace UniChat.Editor
                                 }
                             }
 
-                            fileStream.Write(fileData, 0, fileData.Length);
-                            if (chunkIndex % 10 == 0 || chunkIndex == totalChunks - 1) // Reduce frequency of progress bar updates
+                            if (fileStream != null)
                             {
-                                EditorUtility.DisplayProgressBar("File Transfer", $"Receiving {fileName} ({chunkIndex + 1}/{totalChunks})", (float)(chunkIndex + 1) / totalChunks);
-                            }
-                            AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>Received chunk {chunkIndex + 1}/{totalChunks} for {fileName}</color>");
+                                fileStream.Write(fileData, 0, fileData.Length);
+                                if (chunkIndex % 10 == 0 ||
+                                    chunkIndex == totalChunks - 1) // Reduce frequency of progress bar updates
+                                {
+                                    EditorUtility.DisplayProgressBar("File Transfer",
+                                            $"Receiving {fileName} ({chunkIndex + 1}/{totalChunks})",
+                                            (float)(chunkIndex + 1) / totalChunks);
+                                }
 
-                            if (chunkIndex == totalChunks - 1) // End of file transfer
-                            {
-                                File.WriteAllBytes(currentFileName, fileStream.ToArray());
-                                AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>File {fileName} saved to {currentFileName}</color>");
-                                fileStream.Close();
-                                fileStream = null;
-                                currentFileName = null;
-                                EditorUtility.ClearProgressBar();
+                                AppendMessage(
+                                        $"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>Received chunk {chunkIndex + 1}/{totalChunks} for {fileName}</color>");
+
+                                if (chunkIndex == totalChunks - 1) // End of file transfer
+                                {
+                                    await File.WriteAllBytesAsync(currentFileName, fileStream.ToArray(), cancellationToken);
+                                    AppendMessage(
+                                            $"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>File {fileName} saved to {currentFileName}</color>");
+                                    fileStream.Close();
+                                    fileStream = null;
+                                    currentFileName = null;
+                                    EditorUtility.ClearProgressBar();
+                                }
                             }
+
                             Repaint(); // Redraw the window
                         }
                     }
@@ -325,11 +337,16 @@ namespace UniChat.Editor
             }
         }
 
+        public async UniTask ProcessMessageQueueAsync()
+        {
+            while (_messageQueue.Count > 0 && _connected)
+            {
+                string message = _messageQueue.Dequeue();
+                await SendMessageAsync(message);
+            }
+        }
 
-
-
-
-        private void Disconnect()
+        public void Disconnect()
         {
             try
             {
@@ -428,15 +445,17 @@ namespace UniChat.Editor
             _chunkSize = size;
         }
 
-        private void SavePreferences()
+        public void SavePreferences()
         {
             EditorPrefs.SetString(UserMessageColorPrefKey, ColorUtility.ToHtmlStringRGB(_userMessageColor));
             EditorPrefs.SetString(LogMessageColorPrefKey, ColorUtility.ToHtmlStringRGB(_logMessageColor));
             EditorPrefs.SetInt(ChunkSizePrefKey, _chunkSize);
             EditorPrefs.SetString(UsernamePrefKey, _username);
+            EditorPrefs.SetString(RolePrefKey, isServer ? "Server" : "Client");
+            EditorPrefs.SetString(IPAddressPrefKey, ipAddress);
         }
 
-        private void LoadPreferences()
+        public void LoadPreferences()
         {
             if (EditorPrefs.HasKey(UserMessageColorPrefKey))
             {
@@ -456,32 +475,29 @@ namespace UniChat.Editor
                 _logMessageColor = Color.blue;
             }
 
-            if (EditorPrefs.HasKey(ChunkSizePrefKey))
+            _chunkSize = EditorPrefs.HasKey(ChunkSizePrefKey) ? EditorPrefs.GetInt(ChunkSizePrefKey) : 65536; // Default chunk size
+
+            _username = EditorPrefs.HasKey(UsernamePrefKey) ? EditorPrefs.GetString(UsernamePrefKey) : "Username";
+
+            if (EditorPrefs.HasKey(RolePrefKey))
             {
-                _chunkSize = EditorPrefs.GetInt(ChunkSizePrefKey);
+                isServer = EditorPrefs.GetString(RolePrefKey) == "Server";
             }
             else
             {
-                _chunkSize = 65536; // Default chunk size
+                isServer = true;
             }
 
-            if (EditorPrefs.HasKey(UsernamePrefKey))
-            {
-                _username = EditorPrefs.GetString(UsernamePrefKey);
-            }
-            else
-            {
-                _username = "Username";
-            }
+            ipAddress = EditorPrefs.HasKey(IPAddressPrefKey) ? EditorPrefs.GetString(IPAddressPrefKey, "IP Address") : "IP Address";
         }
 
-        public class OptionsWindow : EditorWindow
+        public sealed class OptionsWindow : EditorWindow
         {
             private ChatEditorWindow _chatEditorWindow;
             private Color _userMessageColor;
             private Color _logMessageColor;
             private int _chunkSize;
-            private string[] _chunkSizeOptions = new[] { "8KB", "64KB", "256KB" };
+            private readonly string[] _chunkSizeOptions = new[] { "8KB", "64KB", "256KB" };
             private int _selectedChunkSizeOption;
 
             public static void ShowWindow(ChatEditorWindow chatEditorWindow)
@@ -518,5 +534,42 @@ namespace UniChat.Editor
     public static class UniTaskExtensions
     {
         public static void Forget(this UniTask task) { }
+    }
+
+    [InitializeOnLoad]
+    public static class CompilationWatcher
+    {
+        static CompilationWatcher()
+        {
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+            AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
+        }
+
+        private static void OnBeforeAssemblyReload()
+        {
+            if (ChatEditorWindow.Instance != null)
+            {
+                ChatEditorWindow.Instance.SavePreferences();
+                ChatEditorWindow.Instance.Disconnect();
+            }
+        }
+
+        private static void OnAfterAssemblyReload()
+        {
+            ChatEditorWindow window = ChatEditorWindow.Instance;
+            if (window != null)
+            {
+                window.LoadPreferences();
+                if (window.isServer)
+                {
+                    window.StartServerAsync().Forget();
+                }
+                else
+                {
+                    window.ConnectToServerAsync(window.ipAddress).Forget();
+                }
+                window.ProcessMessageQueueAsync().Forget();
+            }
+        }
     }
 }

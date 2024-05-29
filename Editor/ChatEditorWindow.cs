@@ -204,7 +204,7 @@ namespace UniChat.Editor
                     int currentChunkSize = Math.Min(_chunkSize, fileData.Length - i * _chunkSize);
                     byte[] chunkData = new byte[currentChunkSize];
                     Buffer.BlockCopy(fileData, i * _chunkSize, chunkData, 0, currentChunkSize);
-                    byte[] messageData = Encoding.UTF8.GetBytes($"FILE:{fileName}:{i}:{totalChunks}:");
+                    byte[] messageData = Encoding.UTF8.GetBytes($"FILE:{fileName}:{i}:{totalChunks}:\0");
                     byte[] data = new byte[messageData.Length + chunkData.Length];
                     Buffer.BlockCopy(messageData, 0, data, 0, messageData.Length);
                     Buffer.BlockCopy(chunkData, 0, data, messageData.Length, chunkData.Length);
@@ -212,7 +212,10 @@ namespace UniChat.Editor
                     await _networkStream.WriteAsync(data, 0, data.Length);
 
                     // Update progress
-                    EditorUtility.DisplayProgressBar("File Transfer", $"Sending {fileName} ({i + 1}/{totalChunks})", (float)(i + 1) / totalChunks);
+                    if (i % 10 == 0 || i == totalChunks - 1) // Reduce frequency of progress bar updates
+                    {
+                        EditorUtility.DisplayProgressBar("File Transfer", $"Sending {fileName} ({i + 1}/{totalChunks})", (float)(i + 1) / totalChunks);
+                    }
                 }
                 AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_userMessageColor)}>Me: Sent file {fileName}</color>");
                 EditorUtility.ClearProgressBar();
@@ -229,11 +232,15 @@ namespace UniChat.Editor
             }
         }
 
+
+
+
+
         private async UniTaskVoid ReceiveMessagesAsync(CancellationToken cancellationToken)
         {
             try
             {
-                byte[] buffer = new byte[65536]; // Augmentation de la taille du buffer pour améliorer les performances
+                byte[] buffer = new byte[_chunkSize + 1024]; // Taille du buffer légèrement supérieure à la taille des chunks pour gérer les métadonnées
                 string currentFileName = null;
                 MemoryStream fileStream = null;
                 int totalChunks = 0;
@@ -251,12 +258,14 @@ namespace UniChat.Editor
                         }
                         else if (message.StartsWith("FILE:"))
                         {
-                            string[] fileInfo = message.Split(':');
+                            int metadataEndIndex = message.IndexOf('\0');
+                            string metadata = message.Substring(0, metadataEndIndex);
+                            string[] fileInfo = metadata.Split(':');
                             string fileName = fileInfo[1];
                             int chunkIndex = int.Parse(fileInfo[2]);
                             totalChunks = int.Parse(fileInfo[3]);
 
-                            int fileDataIndex = message.IndexOf(':', 5) + 1;
+                            int fileDataIndex = metadataEndIndex + 1;
                             byte[] fileData = new byte[bytesRead - fileDataIndex];
                             Buffer.BlockCopy(buffer, fileDataIndex, fileData, 0, fileData.Length);
 
@@ -285,7 +294,10 @@ namespace UniChat.Editor
                             }
 
                             fileStream.Write(fileData, 0, fileData.Length);
-                            EditorUtility.DisplayProgressBar("File Transfer", $"Receiving {fileName} ({chunkIndex + 1}/{totalChunks})", (float)(chunkIndex + 1) / totalChunks);
+                            if (chunkIndex % 10 == 0 || chunkIndex == totalChunks - 1) // Reduce frequency of progress bar updates
+                            {
+                                EditorUtility.DisplayProgressBar("File Transfer", $"Receiving {fileName} ({chunkIndex + 1}/{totalChunks})", (float)(chunkIndex + 1) / totalChunks);
+                            }
                             AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>Received chunk {chunkIndex + 1}/{totalChunks} for {fileName}</color>");
 
                             if (chunkIndex == totalChunks - 1) // End of file transfer
@@ -297,8 +309,8 @@ namespace UniChat.Editor
                                 currentFileName = null;
                                 EditorUtility.ClearProgressBar();
                             }
+                            Repaint(); // Redraw the window
                         }
-                        Repaint(); // Redraw the window
                     }
                 }
             }
@@ -312,6 +324,10 @@ namespace UniChat.Editor
                 EditorUtility.ClearProgressBar();
             }
         }
+
+
+
+
 
         private void Disconnect()
         {

@@ -16,6 +16,8 @@ UniChat is a Unity asset designed to enable developers to communicate directly w
 
 ### Installation
 
+**The asset depends from UniTask so go at https://github.com/Cysharp/UniTask and follow instruction**
+
 1. Clone or download the `UniChat` repository.
 2. Place the `UniChat` folder into your Unity project's `Assets` directory.
 

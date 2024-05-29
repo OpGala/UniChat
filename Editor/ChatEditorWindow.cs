@@ -33,12 +33,12 @@ namespace UniChat.Editor
         private Color _logMessageColor;
         private int _chunkSize;
 
-        private static readonly string UserMessageColorPrefKey = "UniChat_UserMessageColor";
-        private static readonly string LogMessageColorPrefKey = "UniChat_LogMessageColor";
-        private static readonly string ChunkSizePrefKey = "UniChat_ChunkSize";
-        private static readonly string UsernamePrefKey = "UniChat_Username";
+        private const string UserMessageColorPrefKey = "UniChat_UserMessageColor";
+        private const string LogMessageColorPrefKey = "UniChat_LogMessageColor";
+        private const string ChunkSizePrefKey = "UniChat_ChunkSize";
+        private const string UsernamePrefKey = "UniChat_Username";
 
-        [MenuItem("Window/UniChat")]
+        [MenuItem("Tools/UniChat")]
         public static void ShowWindow()
         {
             GetWindow<ChatEditorWindow>("UniChat");
@@ -66,7 +66,7 @@ namespace UniChat.Editor
             _username = EditorGUILayout.TextField("Username", _username);
 
             _scrollPosition = EditorGUILayout.BeginScrollView(_scrollPosition);
-            GUIStyle chatStyle = new GUIStyle(EditorStyles.textArea) { richText = true };
+            var chatStyle = new GUIStyle(EditorStyles.textArea) { richText = true };
             EditorGUILayout.TextArea(_chatLog, chatStyle, GUILayout.ExpandHeight(true));
             EditorGUILayout.EndScrollView();
 
@@ -232,10 +232,6 @@ namespace UniChat.Editor
             }
         }
 
-
-
-
-
         private async UniTaskVoid ReceiveMessagesAsync(CancellationToken cancellationToken)
         {
             try
@@ -243,7 +239,6 @@ namespace UniChat.Editor
                 byte[] buffer = new byte[_chunkSize + 1024]; // Taille du buffer légèrement supérieure à la taille des chunks pour gérer les métadonnées
                 string currentFileName = null;
                 MemoryStream fileStream = null;
-                int totalChunks = 0;
 
                 while (_connected)
                 {
@@ -263,7 +258,7 @@ namespace UniChat.Editor
                             string[] fileInfo = metadata.Split(':');
                             string fileName = fileInfo[1];
                             int chunkIndex = int.Parse(fileInfo[2]);
-                            totalChunks = int.Parse(fileInfo[3]);
+                            int totalChunks = int.Parse(fileInfo[3]);
 
                             int fileDataIndex = metadataEndIndex + 1;
                             byte[] fileData = new byte[bytesRead - fileDataIndex];
@@ -293,22 +288,32 @@ namespace UniChat.Editor
                                 }
                             }
 
-                            fileStream.Write(fileData, 0, fileData.Length);
-                            if (chunkIndex % 10 == 0 || chunkIndex == totalChunks - 1) // Reduce frequency of progress bar updates
+                            if (fileStream != null)
                             {
-                                EditorUtility.DisplayProgressBar("File Transfer", $"Receiving {fileName} ({chunkIndex + 1}/{totalChunks})", (float)(chunkIndex + 1) / totalChunks);
-                            }
-                            AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>Received chunk {chunkIndex + 1}/{totalChunks} for {fileName}</color>");
+                                fileStream.Write(fileData, 0, fileData.Length);
+                                if (chunkIndex % 10 == 0 ||
+                                    chunkIndex == totalChunks - 1) // Reduce frequency of progress bar updates
+                                {
+                                    EditorUtility.DisplayProgressBar("File Transfer",
+                                            $"Receiving {fileName} ({chunkIndex + 1}/{totalChunks})",
+                                            (float)(chunkIndex + 1) / totalChunks);
+                                }
 
-                            if (chunkIndex == totalChunks - 1) // End of file transfer
-                            {
-                                File.WriteAllBytes(currentFileName, fileStream.ToArray());
-                                AppendMessage($"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>File {fileName} saved to {currentFileName}</color>");
-                                fileStream.Close();
-                                fileStream = null;
-                                currentFileName = null;
-                                EditorUtility.ClearProgressBar();
+                                AppendMessage(
+                                        $"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>Received chunk {chunkIndex + 1}/{totalChunks} for {fileName}</color>");
+
+                                if (chunkIndex == totalChunks - 1) // End of file transfer
+                                {
+                                    await File.WriteAllBytesAsync(currentFileName, fileStream.ToArray(), cancellationToken);
+                                    AppendMessage(
+                                            $"<color=#{ColorUtility.ToHtmlStringRGB(_logMessageColor)}>File {fileName} saved to {currentFileName}</color>");
+                                    fileStream.Close();
+                                    fileStream = null;
+                                    currentFileName = null;
+                                    EditorUtility.ClearProgressBar();
+                                }
                             }
+
                             Repaint(); // Redraw the window
                         }
                     }
@@ -324,10 +329,6 @@ namespace UniChat.Editor
                 EditorUtility.ClearProgressBar();
             }
         }
-
-
-
-
 
         private void Disconnect()
         {
@@ -456,32 +457,18 @@ namespace UniChat.Editor
                 _logMessageColor = Color.blue;
             }
 
-            if (EditorPrefs.HasKey(ChunkSizePrefKey))
-            {
-                _chunkSize = EditorPrefs.GetInt(ChunkSizePrefKey);
-            }
-            else
-            {
-                _chunkSize = 65536; // Default chunk size
-            }
+            _chunkSize = EditorPrefs.HasKey(ChunkSizePrefKey) ? EditorPrefs.GetInt(ChunkSizePrefKey) : 65536; // Default chunk size
 
-            if (EditorPrefs.HasKey(UsernamePrefKey))
-            {
-                _username = EditorPrefs.GetString(UsernamePrefKey);
-            }
-            else
-            {
-                _username = "Username";
-            }
+            _username = EditorPrefs.HasKey(UsernamePrefKey) ? EditorPrefs.GetString(UsernamePrefKey) : "Username";
         }
 
-        public class OptionsWindow : EditorWindow
+        public sealed class OptionsWindow : EditorWindow
         {
             private ChatEditorWindow _chatEditorWindow;
             private Color _userMessageColor;
             private Color _logMessageColor;
             private int _chunkSize;
-            private string[] _chunkSizeOptions = new[] { "8KB", "64KB", "256KB" };
+            private readonly string[] _chunkSizeOptions = new[] { "8KB", "64KB", "256KB" };
             private int _selectedChunkSizeOption;
 
             public static void ShowWindow(ChatEditorWindow chatEditorWindow)
